@@ -1,46 +1,28 @@
 import numpy as np
-from api.script.person import Joint, Person
+from .person import Joint, Person
 
 """Module for algorithm calculations."""
 
 
 
 
-def calculate_angle( joint1:Joint, joint2:Joint):
+def calculate_angle(joint1: Joint, joint2: Joint):
     """
     Takes two joint objects and returns the angle of 2 seen from 1
     y in opposite direction to conventional
     """
-    x1, y1 = joint1.x  , joint1.y
-    x2, y2 = joint2.x , joint2.y
+    delta_x = joint2.x - joint1.x
+    delta_y = joint2.y - joint1.y
 
-    delta_x = x2-x1
-    delta_y = y2-y1
-
-    if delta_x ==0 and delta_y ==0:
+    if delta_x == 0 and delta_y == 0:
         return None
-    elif delta_x ==0:
-        if delta_y >0:
-            return 90
-        else:
-            return 270
-    elif delta_y ==0:
-        if delta_x>0 :
-            return 0
-        else:
-            return 180
-    elif delta_x >0 and delta_y>0:
-        grad= abs(delta_y/delta_x)
-        return np.arctan(grad)*180/np.pi
-    elif delta_x  <0 and delta_y>0:
-        grad = abs(delta_x/delta_y)
-        return np.arctan(grad)*180/np.pi +90
-    elif delta_x< 0 and delta_y< 0:
-        grad = abs(delta_y/delta_x)
-        return np.arctan(grad)*180/np.pi +180
-    else:
-        grad= abs(delta_x / delta_y)
-        return np.arctan(grad)*180/np.pi +270
+    
+    # Use arctan2 which handles all quadrants efficiently
+    angle_rad = np.arctan2(delta_y, delta_x)
+    angle_deg = np.degrees(angle_rad)
+    
+    # Normalize to 0-360 range
+    return angle_deg % 360
 
 
 

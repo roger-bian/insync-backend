@@ -1,43 +1,6 @@
-# packaging
-pip
-setuptools>=26
-twine
-wheel>=0.29
-
-# data science
-numpy
-pandas
-
-# tests/linter
-black
-coverage
-flake8
-pytest
-yapf
-
-# API
-google-cloud-storage
-
-# utilities
-six>=1.14
-joblib
-memoized-property
-termcolor
-
-# command in line visualisation
-colorama
-
-## API deployment
-fastapi
-uvicorn
-
-## allow video gfile manipulation to send through API (need on API side and front-end)
-python-multipart
-
-# deep learning
+numpy<2
 opencv-python
 tensorflow-hub
-
 tensorflow-macos==2.10.0; sys_platform == 'darwin' and 'ARM' in platform_version # Mac M-chips
 tensorflow==2.10.0; sys_platform == 'darwin' and 'ARM' not in platform_version # Mac Intel chips
 tensorflow==2.10.0; sys_platform != 'darwin' # Windows & Ubuntu Intel chips

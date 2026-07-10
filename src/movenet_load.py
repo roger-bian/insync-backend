@@ -9,7 +9,7 @@ import os
 import glob
 
 #Import calculation functions
-from api.script.calculations import data_to_people, similarity_scorer
+from .calculations import data_to_people, similarity_scorer
 
 
 # Load the input image.
@@ -38,30 +38,6 @@ def load_model():
     print(Fore.BLUE + f"model loads in: {time.time()-start}s" + Style.RESET_ALL)
     
     return model
-
-
-def load_video_and_release(path : str, output_format: str, output_name :str):
-    """
-    load video and define output format
-    """
-    # Conversion on the video in a opencv Videocapture (collection of frames)
-    vid = cv2.VideoCapture(path)
-    fps = int(vid.get(cv2.CAP_PROP_FPS))
-    frame_count = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
-    width  = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Video analysed: \n fps: {fps}, *\
-          \n frame count: {frame_count} , \n width : {width}, \n height : {height}")
-
-    # creation onf the writer to recompose the video later on
-    if output_format =="avi":
-        writer = cv2.VideoWriter(f"{output_name}.avi",
-        cv2.VideoWriter_fourcc(*"MJPG"), fps,(width,height))
-    elif output_format =="mp4":
-        writer = cv2.VideoWriter(f"{output_name}.mp4",
-        cv2.VideoWriter_fourcc(*"mp4v"), fps,(width,height))
-
-    return vid, writer, fps, frame_count, width, height
 
 def preprocess_image(image, new_width, new_height):
     """
@@ -235,100 +211,3 @@ def calculate_score(keypoints , number_of_people:int, face_ignored:bool, conf_th
     link_mae, frame_score, worst_link_name, worst_link_score, ignore_frame = similarity_scorer(people, conf_threshold)
     print(Fore.BLUE + f"Scoring completed in: {time.time()-start}s" + Style.RESET_ALL)
     return people, link_mae, frame_score , worst_link_name , worst_link_score, ignore_frame
-
-
-def predict_on_stream (vid, writer, model, width: int, height :int,
-                       dancers:int, face_ignored:bool, conf_threshold:float,
-                       confidence_display:bool):
-    """
-    Calculate synchronization scores & write frames to video
-    """
-    
-    all_scores = []
-    all_people = []
-    all_link_mae = []
-    worst_link_scores =[]
-    worst_link_names =[]
-    frame_is_ignored_list=[]
-    count = 0
-
-    # clean screencaps folder
-    files = glob.glob(f"{os.path.abspath('.')}/api/screencaps/*.jpg")
-    for f in files:
-        os.remove(f)
-
-    while(vid.isOpened()):
-        ret, frame = vid.read()
-        if ret==True:
-            image = frame.copy()
-            
-            # Preprocessing the image
-            input_image = preprocess_image(image, 256, 256)
-            
-            # Making prediction
-            keypoints = predict(model, input_image)
-            keypoints= np.squeeze(np.multiply(keypoints, [height,width,1]))
-            
-            # Calculate scores
-            people, link_mae, frame_score, worst_link_name, \
-                worst_link_score, ignore_frame = calculate_score(
-                    keypoints=keypoints,
-                    number_of_people=dancers,
-                    face_ignored=face_ignored,
-                    conf_threshold=conf_threshold
-                    )
-            all_scores.append(frame_score)
-            all_people.append(people)
-            all_link_mae.append(link_mae)
-            worst_link_scores.append(worst_link_score)
-            worst_link_names.append(worst_link_name)
-            frame_is_ignored_list.append(ignore_frame)
-
-            # skip frame if confidence threshold failed
-            if ignore_frame:
-                frame_resize = cv2.resize(
-                    image,
-                    (width, height),
-                    interpolation=cv2.INTER_LANCZOS4
-                )
-                frame_text = add_frame_text(frame_resize, "not analysed", color=(0, 0, 255))
-
-            else:
-                print(f"FRAME_SCORE{frame_score}, WORST LINK_NAME:{worst_link_name}, WORST LINK SCORE: {worst_link_score}")
-                #frame = cv2.flip(frame,0)
-                image = drawing_links(people, link_mae, image, linkwidth=6)
-                frame_mask = image.copy()
-                people = all_people[count]
-                frame_mask = drawing_joints(keypoints,
-                                            people=people,
-                                            frame=frame_mask,
-                                            confidence_display=confidence_display)
-
-                frame_superposition = cv2.addWeighted(src1=frame,
-                                                    alpha=0.20,
-                                                    src2=frame_mask,
-                                                    beta=0.80,
-                                                    gamma=0)
-
-
-                frame_resize = cv2.resize(
-                        frame_superposition,
-                        (width, height),
-                        interpolation=cv2.INTER_LANCZOS4
-                ) 
-                
-                # OpenCV processes BGR images instead of RGB
-                frame_text = add_frame_text(frame_resize, count, color=(0, 255, 0))
-
-            # save frame as jpg
-            cv2.imwrite(f"{os.path.abspath('.')}/api/screencaps/frame%d.jpg" % count, frame_text)
-            count += 1
-
-            # write video
-            writer.write(frame_text)
-        else:
-            break
-
-    writer.release()
-
-    return vid , all_scores, all_people, all_link_mae , worst_link_scores , worst_link_names, frame_is_ignored_list
