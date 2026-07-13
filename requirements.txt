@@ -1,3 +1,4 @@
+tqdm
 numpy<2
 opencv-python
 tensorflow-hub

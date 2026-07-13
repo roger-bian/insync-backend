@@ -1,77 +1,11 @@
-# Import TF and TF Hub libraries.
-import tensorflow as tf
-import tensorflow_hub as hub
 import cv2
 import numpy as np
-from colorama import Fore, Style
 import time
-import os
-import glob
 
-#Import calculation functions
-from .calculations import data_to_people, similarity_scorer
+from .person import Joint, Person
 
 
-# Load the input image.
-def load_image(path : str):
-    """
-    Take the path (as a string)of an image load and prepare it to be ingested by the model
-    MoveNet Multipose Lightning 1
-    input : path as a string
-    output : tensorflow tensor 256 by 256 RGB with tf.int32 values
-    """
-    image = tf.io.read_file(path)
-    image = tf.compat.v1.image.decode_jpeg(image)
-    image = tf.expand_dims(image, axis=0)
-    # Resize and pad the image to keep the aspect ratio and fit the expected size.
-    image = tf.cast(tf.image.resize_with_pad(image, 160, 256), dtype=tf.int32)
-    return image
-
-# Download the model from TF Hub.
-def load_model():
-    """
-    load model from tensorflow hub
-    """
-    start=time.time()
-    model = hub.load("https://tfhub.dev/google/movenet/multipose/lightning/1")
-    model = model.signatures['serving_default']
-    print(Fore.BLUE + f"model loads in: {time.time()-start}s" + Style.RESET_ALL)
-    
-    return model
-
-def preprocess_image(image, new_width, new_height):
-    """
-    take an frame of a video converted to an image through opencv,
-    wth the new_width and new height  for reshaping purpose.
-    Based on the image original definition :
-    - (480p: 854px by 480px)
-    - (720p: 854px by 480px)
-    - (1080p: 854px by 480px)
-    """
-    start = time.time()
-    image = cv2.resize(image, (new_width, new_height))
-    # Resize to the target shape and cast to an int32 vector
-    input_image = tf.cast(tf.image.resize_with_pad(image, new_width, new_height), dtype=tf.int32)
-    # Create a batch (input tensor)
-    input_image = tf.expand_dims(input_image, axis=0)
-
-    print(Fore.BLUE + f"image processed in: {time.time()-start}s" + Style.RESET_ALL)
-    print(input_image.shape)
-    return input_image
-
-def predict(model, input_image):
-    """
-    Use the model to predict the keypoints given a reshaped input_image.
-    """
-    # Run model inference.
-    start = time.time()
-    outputs = model(input_image)
-    # Output is a [1, 6, 56] tensor that we can reshape
-    keypoints = outputs['output_0'].numpy()[:,:,:51].reshape((6,17,3))
-    print(Fore.BLUE + f"Prediction and keypoint output in: {time.time()-start}s" + Style.RESET_ALL)
-    return keypoints
-
-def drawing_joints(keypoints, people , frame, confidence_display):
+def draw_joints(keypoints, people , frame, confidence_display):
     """
     Plot the positions of the joints on a frame.
     """
@@ -79,12 +13,10 @@ def drawing_joints(keypoints, people , frame, confidence_display):
     no_display = people[0].joints_to_not_be_displayed()
     start=time.time()
     for person_id in range(number_people):
-        print(np.mean(keypoints[person_id,:,2]))
         if np.mean(keypoints[person_id,:,2]) < 0.1:
             pass
         else:
             for person in people:
-                print("plotting ", person.id)
                 for joint, display_off in zip(person.joints, no_display):
                     if display_off:
                         pass
@@ -136,11 +68,10 @@ def drawing_joints(keypoints, people , frame, confidence_display):
                                 lineType=cv2.LINE_AA,
                                 bottomLeftOrigin=False
                             )
-                
-    print(Fore.BLUE + f"Plotting joints output made in: {time.time()-start}s" + Style.RESET_ALL)
     return frame
 
-def drawing_links(people, link_mae, frame, linkwidth: int):
+
+def draw_links(people, link_mae, frame, linkwidth: int):
     """
     Plot the line of the links based on a treshold value for color
     """
@@ -180,8 +111,6 @@ def drawing_links(people, link_mae, frame, linkwidth: int):
                 color=link.color,
                 lineType=cv2.LINE_AA
             )
-
-    print(Fore.BLUE + f"Plotting link output made in: {time.time()-start}s" + Style.RESET_ALL)
     return frame
 
 
@@ -209,5 +138,88 @@ def calculate_score(keypoints , number_of_people:int, face_ignored:bool, conf_th
     start = time.time()
     people =  data_to_people(keypoints , number_of_people, face_ignored)
     link_mae, frame_score, worst_link_name, worst_link_score, ignore_frame = similarity_scorer(people, conf_threshold)
-    print(Fore.BLUE + f"Scoring completed in: {time.time()-start}s" + Style.RESET_ALL)
     return people, link_mae, frame_score , worst_link_name , worst_link_score, ignore_frame
+
+
+def calculate_angle(joint1: Joint, joint2: Joint):
+    """
+    Takes two joint objects and returns the angle of 2 seen from 1
+    y in opposite direction to conventional
+    """
+    delta_x = joint2.x - joint1.x
+    delta_y = joint2.y - joint1.y
+
+    if delta_x == 0 and delta_y == 0:
+        return None
+    
+    # Use arctan2 which handles all quadrants efficiently
+    angle_rad = np.arctan2(delta_y, delta_x)
+    angle_deg = np.degrees(angle_rad)
+    
+    # Normalize to 0-360 range
+    return angle_deg % 360
+
+
+def data_to_people(keypoints: list, number_of_people:int, face_ignored:bool):
+    """
+    Returns list of people objects with coordinates, confidence and angles assigned to joints and links.
+    """
+    #Create list of person objects
+    people = []
+    keypoints= np.array(keypoints)
+    
+    for person_id in range(number_of_people):
+        #Instantiate person
+        person = Person(person_id, face_ignored)
+        #Assign all the coordinates and confidence to the person
+        person.update_joints(keypoints[person_id,:,1], keypoints[person_id,:,0],keypoints[person_id,:,2])
+        person.create_links()
+        
+        for link in person.links:
+            #Calculate angle
+            link.add_angle(calculate_angle(link.joints[0], link.joints[1]))
+        
+        people.append(person)
+
+    return people
+
+
+def similarity_scorer(people:list, conf_threshold:float):
+    """
+    Takes list of person objects
+    Returns list of mean absolute error between angles for each link
+    Returns overall frame score
+    """
+    number_of_people = len(people)
+    number_of_links = len(people[0].links)
+    ignore_frame=False
+
+    # checking if in any min confidence score of any person below the threshold
+    for person in people:
+        if person.min_confidence() < conf_threshold:
+            ignore_frame=True
+            if ignore_frame==True:
+                break
+
+    if number_of_people ==2:
+        link_mae =[]
+        for link_id in range(number_of_links):
+            link_mae.append(abs(people[0].angles()[link_id]- people[1].angles()[link_id]))
+
+    else:
+        #Each row: person column: link_id
+        angle_list = [people[x].angles() for x in range(number_of_people)]
+        stacked_angles= np.vstack(angle_list)
+        #Calculate mean of each link_id
+        mu = np.mean(stacked_angles,axis=0)
+        #Calculate errors
+        errors = abs(stacked_angles - mu)
+        #Calculate mean absolute error
+        link_mae = np.mean(errors, axis =0)
+
+    #Other frame metrics
+    frame_score = np.mean(link_mae)
+    worst_link_score = max(link_mae)
+    worst_link_name = people[0].links[np.argmax(link_mae)].name
+
+    return np.array(link_mae) , frame_score,  worst_link_name , worst_link_score, ignore_frame
