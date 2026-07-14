@@ -146,11 +146,10 @@ def calculate_angle(joint1: Joint, joint2: Joint):
     Takes two joint objects and returns the angle of 2 seen from 1
     y in opposite direction to conventional
     """
+    assert joint1.x is not None and joint1.y is not None, "Joint 1 coordinates are not set."
+    assert joint2.x is not None and joint2.y is not None, "Joint 2 coordinates are not set."
     delta_x = joint2.x - joint1.x
     delta_y = joint2.y - joint1.y
-
-    if delta_x == 0 and delta_y == 0:
-        return None
     
     # Use arctan2 which handles all quadrants efficiently
     angle_rad = np.arctan2(delta_y, delta_x)

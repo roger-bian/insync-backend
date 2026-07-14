@@ -19,7 +19,6 @@ class Joint:
         '''
         self.x = x
         self.y = y
-        return self
 
     def add_confidence(self, confidence : float):
         '''
@@ -31,7 +30,6 @@ class Joint:
         # else:
         #     self.bad_confidence = False
         self.confidence = confidence
-        return self
 
 
 class Link:
@@ -45,19 +43,15 @@ class Link:
 
     def add_joints(self, joint1, joint2):
         self.joints = (joint1, joint2)
-        return self
 
     def set_color(self, color):
         self.color = color
-        return self
 
     def add_score(self, similarity_score :float):
         self.similarity_score = similarity_score
-        return self
 
     def add_angle(self, angle: float):
         self.angle = angle
-        return self
 
 
 class Person:
@@ -69,7 +63,6 @@ class Person:
     def update_joints(self, x_vect, y_vect, conf_vect):
         self.joints = [joint.add_coord(x,y).add_confidence(confidence) \
             for joint ,x, y, confidence in zip(self.joints, x_vect, y_vect, conf_vect)]
-        return self
 
     def create_links(self):
         if self.face_ignored:
@@ -85,7 +78,6 @@ class Person:
             self.joints[link.joint2_id]
             ) for link in self.links_empty
         ]
-        return self
 
     def angles(self):
         return [link.angle for link in self.links]
