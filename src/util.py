@@ -1,106 +1,96 @@
 import cv2
 import numpy as np
-import time
 
-from .person import Joint, Person
+from .person import Person
+
+# Worst-first (threshold, BGR colour); the first threshold met wins.
+LINK_COLORS = (
+    (30, (28, 25, 215)),   # red
+    (20, (97, 174, 253)),  # orange
+    (5, (50, 255, 212)),   # yellow
+    (0, (162, 255, 0)),    # green
+)
+
+# A person whose visible joints are this uncertain is not drawn at all.
+DRAW_CONFIDENCE_THRESHOLD = 0.1
 
 
-def draw_joints(keypoints, people , frame, confidence_display):
+def draw_joints(people, frame, confidence_display):
     """
     Plot the positions of the joints on a frame.
     """
-    number_people = len(people) # number of people selected by the user
-    no_display = people[0].joints_to_not_be_displayed()
-    start=time.time()
-    for person_id in range(number_people):
-        if np.mean(keypoints[person_id,:,2]) < 0.1:
-            pass
-        else:
-            for person in people:
-                for joint, display_off in zip(person.joints, no_display):
-                    if display_off:
-                        pass
-                    else:
-                        x = joint.x
-                        y = joint.y
-                        conf = round(joint.confidence,4)
-                        cv2.circle(
-                        img=frame,
-                        center=(int(x), int(y)),
-                        radius=14,
-                        color=(255,255,255),
-                        thickness=-1,
-                        lineType=cv2.LINE_AA
-                        )
-                        cv2.circle(
-                        img=frame,
-                        center=(int(x), int(y)),
-                        radius=12,
-                        color=(120,10,120),
-                        thickness=-1,
-                        lineType=cv2.LINE_AA
-                        )
-                        if confidence_display:
-                            X_top_box = int(x)-7
-                            Y_top_box = int(y)-15
-                            X_bottom_box = int(x)+65
-                            Y_bottom_box = int(y)+4
+    for person in people:
+        if person.mean_confidence() < DRAW_CONFIDENCE_THRESHOLD:
+            continue
 
+        for joint, hidden in zip(person.joints, person.display_mask):
+            if hidden:
+                continue
 
-                            #background rectangle for the confidence score display per joint
-                            cv2.rectangle(
-                                img=frame,
-                                pt1=(X_top_box,Y_top_box), # top left corner
-                                pt2=(X_bottom_box,Y_bottom_box),#bottom right corner
-                                color=(255,255,255),
-                                thickness=-1,
-                                lineType=cv2.LINE_AA
-                            )
-                            #confidence score display per joint
-                            cv2.putText(
-                                img=frame,
-                                text=f'{conf}',
-                                org=(int(x)-5,int(y)),
-                                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                                fontScale=0.5,
-                                color=(0, 0, 0),
-                                thickness=1,
-                                lineType=cv2.LINE_AA,
-                                bottomLeftOrigin=False
-                            )
+            x, y = int(joint.x), int(joint.y)
+            cv2.circle(
+                img=frame,
+                center=(x, y),
+                radius=14,
+                color=(255, 255, 255),
+                thickness=-1,
+                lineType=cv2.LINE_AA
+            )
+            cv2.circle(
+                img=frame,
+                center=(x, y),
+                radius=12,
+                color=(120, 10, 120),
+                thickness=-1,
+                lineType=cv2.LINE_AA
+            )
+            if confidence_display:
+                #background rectangle for the confidence score display per joint
+                cv2.rectangle(
+                    img=frame,
+                    pt1=(x - 7, y - 15),    # top left corner
+                    pt2=(x + 65, y + 4),    # bottom right corner
+                    color=(255, 255, 255),
+                    thickness=-1,
+                    lineType=cv2.LINE_AA
+                )
+                #confidence score display per joint
+                cv2.putText(
+                    img=frame,
+                    text=f'{round(joint.confidence, 4)}',
+                    org=(x - 5, y),
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                    fontScale=0.5,
+                    color=(0, 0, 0),
+                    thickness=1,
+                    lineType=cv2.LINE_AA,
+                    bottomLeftOrigin=False
+                )
     return frame
+
+
+def link_color(mae: float):
+    """
+    Colour for a link given its mean absolute angular error.
+    """
+    return next(color for threshold, color in LINK_COLORS if mae >= threshold)
 
 
 def draw_links(people, link_mae, frame, linkwidth: int):
     """
     Plot the line of the links based on a treshold value for color
     """
-    start=time.time()
     for person in people:
         for i, link in enumerate(person.links):
-            mae = link_mae[i]
-            if mae>=30:
-                link.set_color((28,25,215))# red in BGR channel (opencv swap the channels)
-            elif mae>=20:
-                link.set_color((97,174,253))
-            elif mae>=10:
-                link.set_color((50,255,212))
-            elif mae>=5:
-                link.set_color((50,255,212))
+            link.set_color(link_color(link_mae[i]))
 
-            else:
-                link.set_color((162,255,0))
-
-            x1 , y1 = int(link.joints[0].x), int(link.joints[0].y)
-            x2 , y2 = int(link.joints[1].x), int(link.joints[1].y)
-            X_mean = int((x1+x2)/2)
-            Y_mean = int((y1+y2)/2)
+            x1, y1 = int(link.joints[0].x), int(link.joints[0].y)
+            x2, y2 = int(link.joints[1].x), int(link.joints[1].y)
             length = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-            angle = link.angle
             polygon = cv2.ellipse2Poly(
-                center=(X_mean,Y_mean),
-                axes=(int(length/2),linkwidth),
-                angle= int(angle),
+                center=((x1 + x2) // 2, (y1 + y2) // 2),
+                axes=(int(length / 2), linkwidth),
+                angle=int(link.angle),
                 arcStart=0,
                 arcEnd=360,
                 delta=1
@@ -114,111 +104,116 @@ def draw_links(people, link_mae, frame, linkwidth: int):
     return frame
 
 
-def add_frame_text(frame, count: int, color:tuple):
+def add_frame_text(frame, text, color: tuple, org=(10, 50), scale: float = 2):
     """
-    Add frame number to frame
+    Add a line of status text to a frame.
     """
-    font = cv2.FONT_HERSHEY_SIMPLEX
     return cv2.putText(img=frame,
-                       text=f'{count}',
-                       org=(10,50),
-                       fontFace=font,
-                       fontScale=2,
+                       text=f'{text}',
+                       org=org,
+                       fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                       fontScale=scale,
                        color=color,
                        thickness=2,
                        lineType=cv2.LINE_AA,
                        bottomLeftOrigin=False)
 
 
-def calculate_score(keypoints , number_of_people:int, face_ignored:bool, conf_threshold:float):
+def calculate_score(people, keypoints, active, conf_threshold: float):
     """
-    Calculate the angles between joints given the keypoints.
-    Give a similariy score for the the frame.
+    Update the roster with this frame's keypoints and score the detected people.
+    Returns the active subset alongside the frame's similarity metrics.
     """
-    start = time.time()
-    people =  data_to_people(keypoints , number_of_people, face_ignored)
-    link_mae, frame_score, worst_link_name, worst_link_score, ignore_frame = similarity_scorer(people, conf_threshold)
-    return people, link_mae, frame_score , worst_link_name , worst_link_score, ignore_frame
+    selected = update_people(people, keypoints, active)
+    link_mae, frame_score, worst_link_name, worst_link_score, ignore_frame = \
+        similarity_scorer(selected, conf_threshold)
+    return selected, link_mae, frame_score, worst_link_name, worst_link_score, ignore_frame
 
 
-def calculate_angle(joint1: Joint, joint2: Joint):
+def calculate_angle(joint1, joint2):
     """
     Takes two joint objects and returns the angle of 2 seen from 1
-    y in opposite direction to conventional
+    y in opposite direction to conventional.
+
+    Reference implementation of the angle convention; the per-frame path uses
+    the vectorised equivalent in update_people.
     """
-    assert joint1.x is not None and joint1.y is not None, "Joint 1 coordinates are not set."
-    assert joint2.x is not None and joint2.y is not None, "Joint 2 coordinates are not set."
     delta_x = joint2.x - joint1.x
     delta_y = joint2.y - joint1.y
-    
+
     # Use arctan2 which handles all quadrants efficiently
-    angle_rad = np.arctan2(delta_y, delta_x)
-    angle_deg = np.degrees(angle_rad)
-    
-    # Normalize to 0-360 range
-    return angle_deg % 360
+    return np.degrees(np.arctan2(delta_y, delta_x)) % 360
 
 
-def data_to_people(keypoints: list, number_of_people:int, face_ignored:bool):
+def angular_diff(a, b):
     """
-    Returns list of people objects with coordinates, confidence and angles assigned to joints and links.
+    Smallest absolute difference between two angles in degrees, in [0, 180].
+    Angles are circular: 359 and 1 are 2 degrees apart, not 358.
     """
-    #Create list of person objects
-    people = []
-    keypoints= np.array(keypoints)
-    
-    for person_id in range(number_of_people):
-        #Instantiate person
-        person = Person(person_id, face_ignored)
-        #Assign all the coordinates and confidence to the person
-        person.update_joints(keypoints[person_id,:,1], keypoints[person_id,:,0],keypoints[person_id,:,2])
-        person.create_links()
-        
-        for link in person.links:
-            #Calculate angle
-            link.add_angle(calculate_angle(link.joints[0], link.joints[1]))
-        
-        people.append(person)
-
-    return people
+    d = np.abs(np.asarray(a) - np.asarray(b)) % 360
+    return np.minimum(d, 360 - d)
 
 
-def similarity_scorer(people:list, conf_threshold:float):
+def make_people(max_people: int, face_ignored: bool):
     """
-    Takes list of person objects
+    Allocate the person roster once, up front. One entry per person slot the
+    pose model can report, whether or not that slot is occupied in a given frame.
+    """
+    return [Person(person_id, face_ignored) for person_id in range(max_people)]
+
+
+def update_people(people, keypoints, active):
+    """
+    Write a frame's keypoints into the pre-allocated roster and return the
+    subset of people actually detected. Allocates nothing per person.
+    """
+    selected = []
+    for slot in active:
+        person = people[slot]
+        y_vect = keypoints[slot, :, 0]
+        x_vect = keypoints[slot, :, 1]
+        person.update_joints(x_vect, y_vect, keypoints[slot, :, 2])
+
+        # One arctan2 over every link at once, rather than a call per link.
+        person.set_angles(np.degrees(np.arctan2(
+            y_vect[person.link_joint2] - y_vect[person.link_joint1],
+            x_vect[person.link_joint2] - x_vect[person.link_joint1],
+        )) % 360)
+        selected.append(person)
+
+    return selected
+
+
+def similarity_scorer(people: list, conf_threshold: float):
+    """
+    Takes list of person objects.
     Returns list of mean absolute error between angles for each link
-    Returns overall frame score
+    Returns overall frame score.
+
+    Synchronization is undefined for fewer than two people, so those frames are
+    flagged to be ignored rather than scored.
     """
-    number_of_people = len(people)
-    number_of_links = len(people[0].links)
-    ignore_frame=False
+    if len(people) < 2:
+        return None, None, None, None, True
 
     # checking if in any min confidence score of any person below the threshold
     for person in people:
-        if person.min_confidence() < conf_threshold:
-            ignore_frame=True
-            if ignore_frame==True:
-                break
+        if person.min_confidence() <= conf_threshold:
+            return None, None, None, None, True
 
-    if number_of_people ==2:
-        link_mae =[]
-        for link_id in range(number_of_links):
-            link_mae.append(abs(people[0].angles()[link_id]- people[1].angles()[link_id]))
+    #Each row: person column: link_id
+    stacked_angles = np.vstack([person.angles() for person in people])
 
-    else:
-        #Each row: person column: link_id
-        angle_list = [people[x].angles() for x in range(number_of_people)]
-        stacked_angles= np.vstack(angle_list)
-        #Calculate mean of each link_id
-        mu = np.mean(stacked_angles,axis=0)
-        #Calculate errors
-        errors = abs(stacked_angles - mu)
-        #Calculate mean absolute error
-        link_mae = np.mean(errors, axis =0)
+    # Mean absolute angular difference over every pair of people. For two
+    # people this is exactly |a - b|, so the draw_links colour thresholds keep
+    # their existing calibration, and it extends to any number of people.
+    left, right = np.triu_indices(len(people), k=1)
+    link_mae = angular_diff(stacked_angles[left], stacked_angles[right]).mean(axis=0)
 
     #Other frame metrics
-    frame_score = np.mean(link_mae)
-    worst_link_score = max(link_mae)
-    worst_link_name = people[0].links[np.argmax(link_mae)].name
+    frame_score = float(np.mean(link_mae))
+    worst_link_id = int(np.argmax(link_mae))
+    worst_link_name = people[0].links[worst_link_id].name
+    worst_link_score = float(link_mae[worst_link_id])
 
-    return np.array(link_mae) , frame_score,  worst_link_name , worst_link_score, ignore_frame
+    return link_mae, frame_score, worst_link_name, worst_link_score, False

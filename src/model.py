@@ -1,7 +1,10 @@
-import time
 import cv2
 import tensorflow as tf
 import tensorflow_hub as hub
+
+MAX_PEOPLE = 6           # MoveNet MultiPose always reports six person slots
+KEYPOINTS_PER_PERSON = 17
+INPUT_SIZE = 256         # must be a multiple of 32
 
 
 class Pose:
@@ -13,39 +16,36 @@ class Pose:
         """
         load model from tensorflow hub
         """
-        start=time.time()
         model = hub.load("https://tfhub.dev/google/movenet/multipose/lightning/1")
-        model = model.signatures['serving_default']
-        
-        return model
+        return model.signatures['serving_default']
 
+    def __preprocess_image(self, image, new_width=INPUT_SIZE, new_height=INPUT_SIZE):
+        """
+        Take a frame of a video read through opencv and prepare it for the model.
 
-    def __preprocess_image(self, image, new_width=256, new_height=256):
+        OpenCV hands us BGR, MoveNet expects RGB. The resize deliberately
+        squashes rather than pads: keypoints then map straight back onto the
+        original frame by multiplying with (height, width), no un-padding.
         """
-        take an frame of a video converted to an image through opencv,
-        wth the new_width and new height  for reshaping purpose.
-        Based on the image original definition :
-        - (480p: 854px by 480px)
-        - (720p: 854px by 480px)
-        - (1080p: 854px by 480px)
-        """
-        start = time.time()
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = cv2.resize(image, (new_width, new_height))
-        # Resize to the target shape and cast to an int32 vector
-        input_image = tf.cast(tf.image.resize_with_pad(image, new_width, new_height), dtype=tf.int32)
-        # Create a batch (input tensor)
-        input_image = tf.expand_dims(input_image, axis=0)
-        return input_image
-
+        # Cast to an int32 vector and create a batch (input tensor)
+        return tf.cast(tf.expand_dims(image, axis=0), dtype=tf.int32)
 
     def predict(self, input_image):
         """
-        Use the model to predict the keypoints given a reshaped input_image.
+        Use the model to predict the keypoints given a frame.
+
+        Returns (keypoints, person_scores):
+          keypoints     - (6, 17, 3) of (y, x, confidence), normalised to 0-1
+          person_scores - (6,) instance detection score, one per person slot
         """
         preprocessed = self.__preprocess_image(input_image)
         # Run model inference.
-        start = time.time()
         outputs = self.model(preprocessed)
-        # Output is a [1, 6, 56] tensor that we can reshape
-        keypoints = outputs['output_0'].numpy()[:,:,:51].reshape((6,17,3))
-        return keypoints
+        # Output is a [1, 6, 56] tensor: 17 keypoints x (y, x, score) = 51,
+        # then the instance bounding box (4) and its detection score (1).
+        predictions = outputs['output_0'].numpy()[0]
+        keypoints = predictions[:, :51].reshape((MAX_PEOPLE, KEYPOINTS_PER_PERSON, 3))
+        person_scores = predictions[:, 55]
+        return keypoints, person_scores
