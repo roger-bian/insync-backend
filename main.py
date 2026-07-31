@@ -40,7 +40,7 @@ def main(args):
         cap.release()
         raise SystemExit(f"Could not open for writing: {args.output}")
 
-    pose = Pose()
+    pose = Pose(frame_width=width, frame_height=height)
     # Allocated once and reused: the model always reports the same six slots,
     # and only the ones it actually detected are scored on any given frame.
     people = make_people(MAX_PEOPLE, face_ignored=True)
