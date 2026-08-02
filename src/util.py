@@ -14,6 +14,15 @@ LINK_COLORS = (
 # A person whose visible joints are this uncertain is not drawn at all.
 DRAW_CONFIDENCE_THRESHOLD = 0.1
 
+# Degrees between the vertices approximating a link's ellipse. At one degree
+# each link is a 360-gon; at eight it is a 45-gon, which is indistinguishable
+# at these sizes and costs less than half as much to fill.
+LINK_POLY_DELTA = 8
+
+# Slack around the keypoint box when working out what was drawn: enough for the
+# r=14 joint circles and a link ellipse's linkwidth semi-minor axis.
+DRAW_PAD = 20
+
 
 def draw_joints(people, frame, confidence_display):
     """
@@ -28,13 +37,15 @@ def draw_joints(people, frame, confidence_display):
                 continue
 
             x, y = int(joint.x), int(joint.y)
+            # Aliased: at r=14 against anti-aliased links the stair-stepping is
+            # not visible, and it is three times cheaper over 52 circles a frame.
             cv2.circle(
                 img=frame,
                 center=(x, y),
                 radius=14,
                 color=(255, 255, 255),
                 thickness=-1,
-                lineType=cv2.LINE_AA
+                lineType=cv2.LINE_8
             )
             cv2.circle(
                 img=frame,
@@ -42,7 +53,7 @@ def draw_joints(people, frame, confidence_display):
                 radius=12,
                 color=(120, 10, 120),
                 thickness=-1,
-                lineType=cv2.LINE_AA
+                lineType=cv2.LINE_8
             )
             if confidence_display:
                 #background rectangle for the confidence score display per joint
@@ -73,7 +84,10 @@ def link_color(mae: float):
     """
     Colour for a link given its mean absolute angular error.
     """
-    return next(color for threshold, color in LINK_COLORS if mae >= threshold)
+    for threshold, color in LINK_COLORS:
+        if mae >= threshold:
+            return color
+    return LINK_COLORS[-1][1]
 
 
 def draw_links(people, link_mae, frame, linkwidth: int):
@@ -93,7 +107,7 @@ def draw_links(people, link_mae, frame, linkwidth: int):
                 angle=int(link.angle),
                 arcStart=0,
                 arcEnd=360,
-                delta=1
+                delta=LINK_POLY_DELTA
             )
             cv2.fillConvexPoly(
                 img=frame,
@@ -104,17 +118,43 @@ def draw_links(people, link_mae, frame, linkwidth: int):
     return frame
 
 
-def add_frame_text(frame, text, color: tuple, org=(10, 50), scale: float = 2):
+def draw_bounds(keypoints, active, width: int, height: int):
+    """
+    Pixel box (y0, y1, x0, x1) enclosing everything the draw_* helpers touch.
+
+    The helpers paint opaque colour and the blend that follows uses fixed
+    weights, so outside this box blending returns the frame unchanged.
+    Restricting the blend to it is lossless, and turns two full-frame buffer
+    passes into two small ones.
+    """
+    points = keypoints[active][:, :, :2]
+    y0 = int(points[:, :, 0].min()) - DRAW_PAD
+    y1 = int(points[:, :, 0].max()) + DRAW_PAD
+    x0 = int(points[:, :, 1].min()) - DRAW_PAD
+    x1 = int(points[:, :, 1].max()) + DRAW_PAD
+    return max(y0, 0), min(y1, height), max(x0, 0), min(x1, width)
+
+
+def add_frame_text(frame, text, color: tuple, org=(10, 50), scale: float = 2,
+                   thickness: int = None):
     """
     Add a line of status text to a frame.
+
+    Stroke weight follows the font size by default. That is not only a matter
+    of looks: OpenCV's anti-aliased renderer falls off a cliff for thick
+    strokes on small glyphs, and the forty-character status line costs 0.44 ms
+    at thickness 2 against 0.04 ms at thickness 1.
     """
+    if thickness is None:
+        thickness = max(1, round(scale))
+
     return cv2.putText(img=frame,
                        text=f'{text}',
                        org=org,
                        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                        fontScale=scale,
                        color=color,
-                       thickness=2,
+                       thickness=thickness,
                        lineType=cv2.LINE_AA,
                        bottomLeftOrigin=False)
 
@@ -150,8 +190,23 @@ def angular_diff(a, b):
     Smallest absolute difference between two angles in degrees, in [0, 180].
     Angles are circular: 359 and 1 are 2 degrees apart, not 358.
     """
-    d = np.abs(np.asarray(a) - np.asarray(b)) % 360
+    d = np.abs(np.subtract(a, b)) % 360
     return np.minimum(d, 360 - d)
+
+
+# Pair indices for a given number of people, which changes rarely if ever.
+_PAIR_INDICES = {}
+
+
+def pair_indices(count: int):
+    """
+    Every unordered pair of people, cached rather than rebuilt each frame.
+    """
+    pairs = _PAIR_INDICES.get(count)
+    if pairs is None:
+        pairs = np.triu_indices(count, k=1)
+        _PAIR_INDICES[count] = pairs
+    return pairs
 
 
 def make_people(max_people: int, face_ignored: bool):
@@ -207,7 +262,7 @@ def similarity_scorer(people: list, conf_threshold: float):
     # Mean absolute angular difference over every pair of people. For two
     # people this is exactly |a - b|, so the draw_links colour thresholds keep
     # their existing calibration, and it extends to any number of people.
-    left, right = np.triu_indices(len(people), k=1)
+    left, right = pair_indices(len(people))
     link_mae = angular_diff(stacked_angles[left], stacked_angles[right]).mean(axis=0)
 
     #Other frame metrics

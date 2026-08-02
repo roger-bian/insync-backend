@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 import tensorflow as tf
 
+from .profile import Profiler
+
 MAX_PEOPLE = 6           # MoveNet MultiPose always reports six person slots
 KEYPOINTS_PER_PERSON = 17
 
@@ -120,16 +122,39 @@ def crop_frame(frame, top: int, left: int, side: int):
     if (y0, x0, y1, x1) == (top, left, top + side, left + side):
         return frame[y0:y1, x0:x1]      # fully inside, no copy needed
 
-    patch = np.zeros((side, side, frame.shape[2]), dtype=frame.dtype)
-    patch[y0 - top:y1 - top, x0 - left:x1 - left] = frame[y0:y1, x0:x1]
-    return patch
+    # One pass in OpenCV rather than a zero-fill plus a masked blit in numpy.
+    return cv2.copyMakeBorder(frame[y0:y1, x0:x1],
+                              y0 - top, top + side - y1,
+                              x0 - left, left + side - x1,
+                              cv2.BORDER_CONSTANT, value=0)
 
 
 class Pose:
-    def __init__(self, frame_width: int, frame_height: int, refine: bool = True):
+    def __init__(self, frame_width: int, frame_height: int, refine: bool = True,
+                 profiler: Profiler = None):
         self.input_height, self.input_width = input_shape(frame_width, frame_height)
         self.model = load_model("movenet-multipose-lightning-1")
         self.refiner = load_model("movenet-singlepose-thunder-4") if refine else None
+        self.profiler = profiler or Profiler(False)
+        self.__buffers = {}
+
+    def __scratch(self, height: int, width: int):
+        """
+        Reusable resize / channel-swap / batch buffers for one input size.
+
+        Preprocessing runs once for the frame and once per person being
+        refined, so this is 1 + len(active) times a frame; there are only ever
+        two sizes in play, the aspect-preserved frame and Thunder's 256x256.
+        These buffers are consumed synchronously by the model call that follows,
+        so unlike the frames in the loop they are safe to reuse.
+        """
+        scratch = self.__buffers.get((height, width))
+        if scratch is None:
+            scratch = (np.empty((height, width, 3), dtype=np.uint8),
+                       np.empty((height, width, 3), dtype=np.uint8),
+                       np.empty((1, height, width, 3), dtype=np.int32))
+            self.__buffers[(height, width)] = scratch
+        return scratch
 
     def __preprocess_image(self, image, size=None):
         """
@@ -140,12 +165,16 @@ class Pose:
         original frame by multiplying with (height, width).
         """
         width, height = size or (self.input_width, self.input_height)
+        resized, rgb, batch = self.__scratch(height, width)
         # Resizing first and swapping channels after is equivalent — resizing is
         # per-channel — and does the channel swap over fewer pixels.
-        image = cv2.resize(image, (width, height))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        # Cast to an int32 vector and create a batch (input tensor)
-        return tf.cast(tf.expand_dims(image, axis=0), dtype=tf.int32)
+        cv2.resize(image, (width, height), dst=resized)
+        cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=rgb)
+        # The signature wants int32, so widen on the way into the batch buffer
+        # rather than through a tf.expand_dims / tf.cast pair that allocates a
+        # fresh 4x-sized tensor and dispatches two eager ops every call.
+        np.copyto(batch[0], rgb)
+        return tf.convert_to_tensor(batch)
 
     def predict(self, input_image):
         """
@@ -157,6 +186,7 @@ class Pose:
           boxes         - (6, 4) instance box (ymin, xmin, ymax, xmax), 0-1
         """
         preprocessed = self.__preprocess_image(input_image)
+        self.profiler.lap("preprocess")
         # Run model inference.
         outputs = self.model(preprocessed)
         # Output is a [1, 6, 56] tensor: 17 keypoints x (y, x, score) = 51,
@@ -165,6 +195,7 @@ class Pose:
         keypoints = predictions[:, :51].reshape((MAX_PEOPLE, KEYPOINTS_PER_PERSON, 3))
         boxes = predictions[:, 51:55]
         person_scores = predictions[:, 55]
+        self.profiler.lap("multipose")
         return keypoints, person_scores, boxes
 
     def refine(self, frame, keypoints, boxes, active):
@@ -190,6 +221,7 @@ class Pose:
 
             preprocessed = self.__preprocess_image(
                 patch, size=(REFINE_INPUT_SIDE, REFINE_INPUT_SIDE))
+            self.profiler.lap("refine-prep")
             # Output is a [1, 1, 17, 3] tensor of (y, x, score), normalised to
             # the crop, so undo the crop to get back to frame coordinates.
             refined = self.refiner(preprocessed)['output_0'].numpy().reshape(
@@ -197,5 +229,6 @@ class Pose:
             keypoints[slot, :, 0] = (top + refined[:, 0] * side) / height
             keypoints[slot, :, 1] = (left + refined[:, 1] * side) / width
             keypoints[slot, :, 2] = refined[:, 2]
+            self.profiler.lap("refine-infer")
 
         return keypoints

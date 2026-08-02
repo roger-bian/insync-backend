@@ -127,7 +127,8 @@ joint is too uncertain to trust, are marked `not analyzed` and left unscored.
 | `--max-people` | `6` | Cap on people scored per frame. People are detected automatically; 6 is the model maximum. |
 | `--det-threshold` | `0.2` | Minimum instance score for a person to count as detected. |
 | `--conf-threshold` | `0.1` | A frame is not analyzed if any scored joint falls below this confidence. |
-| `--no-display` | _off_ | Process without opening a preview window. |
+| `--display` | _off_ | Open a preview window, refreshed every third frame. `imshow` plus `waitKey` costs several ms a frame, so it is off unless asked for. |
+| `--profile` | _off_ | Print a per-stage timing breakdown of the frame loop; see [Per-frame budget](#per-frame-budget). |
 | `--no-refine` | _off_ | Skip the Thunder second stage; see [Two-stage pose estimation](#two-stage-pose-estimation). |
 
 Press `q` to stop early when the preview window is open.
@@ -153,7 +154,7 @@ Over `sample.mp4` (451 frames, 902 person-frames):
 | median worst scored-joint confidence | 0.39 | 0.48 |
 | frames whose worst joint falls below the 0.1 gate | 6.9% | 0.4% |
 | median per-joint jitter | 6.4 px | 6.4 px |
-| inference per frame, two dancers | 33 ms | 78 ms |
+| inference per frame on CPU, two dancers | 33 ms | 78 ms |
 
 Confidence is the model's own estimate rather than evidence of accuracy — a
 collapsed leg is often reported confidently — so the collapsed-leg count is the
@@ -182,16 +183,59 @@ results — CPU and GPU keypoints agree to a median 0.4 px, and the reported syn
 error moves by 0.03 deg. Verified with TensorFlow 2.21.0 on CUDA 12.9 /
 cuDNN 9.24.
 
-Inference is only about two thirds of the per-frame budget, so the rest of the
-loop — decoding, drawing and encoding — holds the end-to-end gain well under the
-3x seen on inference alone.
-
 Those figures are for the MultiPose stage on its own, as `--no-refine` runs it.
-With the Thunder second stage on, add one 256x256 inference per dancer: on
-`sample.mp4` that takes the whole run from 44 to 76 seconds. Short bursty
-inference can also leave the GPU parked at its idle clock — if the numbers above
-do not reproduce, check `nvidia-smi --query-gpu=clocks.sm,clocks.max.sm` before
-concluding the model is on the CPU.
+With the Thunder second stage on, add one 256x256 inference per dancer. Short
+bursty inference can also leave the GPU parked at its idle clock — if the numbers
+above do not reproduce, check `nvidia-smi --query-gpu=clocks.sm,clocks.max.sm`
+before concluding the model is on the CPU.
+
+## Per-frame budget
+
+`--profile` breaks the loop down by stage. Inference used to be about two thirds
+of it, the rest going on decoding, drawing and encoding; that other third is now
+around an eighth. On `sample.mp4` (720p, two dancers, RTX 2060):
+
+| | one-stage | two-stage |
+|---|---|---|
+| loop time, before | 11.5 s | 18.9 s |
+| loop time, now | 7.6 s | 15.3 s |
+| per frame, now | 16.8 ms | 33.9 ms |
+| of which inference | 14.2 ms (84%) | 29.7 ms (88%) |
+| of which everything else | 2.6 ms (16%) | 4.2 ms (12%) |
+
+Decoding and encoding no longer appear in the budget at all — at 0.04 and
+0.02 ms a frame they are queue hand-offs, not work. Both run on their own thread
+(`src/pipeline.py`), which is worth roughly 7 ms a frame on its own: OpenCV
+releases the GIL inside the mp4v encoder, so a 5-10 ms encode overlaps the model
+completely. The constraint that buys is that a frame handed to the encoder must
+not be touched again, which is why nothing in the loop reuses a frame buffer even
+where it otherwise could.
+
+What remains is preprocessing (1 ms, plus 1.5 ms of crop-and-resize per refined
+dancer) and drawing (1.4 ms). The drawing costs were mostly self-inflicted:
+approximating each link's ellipse at one degree made it a 360-gon, and OpenCV's
+anti-aliased renderer falls off a cliff for thick strokes on small glyphs — the
+status line alone cost 0.44 ms at thickness 2 against 0.04 ms at thickness 1. The
+blend is now applied only to the box the skeleton occupies, which is exact rather
+than approximate: the draw helpers paint opaque colour, so outside that box
+`0.2 x + 0.8 x` returns the frame unchanged, verified bit-for-bit.
+
+None of this moves the output. Keypoints before and after differ by at most
+1.4e-6 normalised, which is the same spread the pipeline shows between two runs
+of identical code — cuDNN does not promise a stable reduction order. Both
+configurations report exactly what they did before: 420 frames at 19.7 deg
+one-stage, 449 at 20.3 deg two-stage.
+
+Measured and not worth keeping: `cv2.setNumThreads` at 1, 2 and 4 all landed
+within noise of the default, so OpenCV's thread pool is left alone.
+
+One caveat on reading these numbers. The 14.2 ms the profiler attributes to
+MultiPose is the cost in the running loop, not the 8-9 ms the same call shows in
+a tight benchmark loop. That gap is the idle-clock effect above: now that the
+loop no longer fills the gaps between inferences with decoding and encoding, the
+GPU spends more of its time waiting, and short bursty work does not hold boost
+clocks. It is a real cost and the profiler is right to report it, but it means
+the stage is not directly comparable to a microbenchmark of the same call.
 
 ## Built With
 - [Python](https://www.python.org/)
