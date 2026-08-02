@@ -40,7 +40,7 @@ def main(args):
         cap.release()
         raise SystemExit(f"Could not open for writing: {args.output}")
 
-    pose = Pose(frame_width=width, frame_height=height)
+    pose = Pose(frame_width=width, frame_height=height, refine=args.refine)
     # Allocated once and reused: the model always reports the same six slots,
     # and only the ones it actually detected are scored on any given frame.
     people = make_people(MAX_PEOPLE, face_ignored=True)
@@ -59,10 +59,12 @@ def main(args):
                 if not ret:
                     break
 
-                # Making prediction
-                keypoints, person_scores = pose.predict(frame)
-                keypoints = keypoints * scale
+                # Making prediction. Only the people that will actually be
+                # scored are worth refining, so pick them before the second
+                # stage runs and convert to pixels once it has.
+                keypoints, person_scores, boxes = pose.predict(frame)
                 active = detect_active(person_scores, args.det_threshold, args.max_people)
+                keypoints = pose.refine(frame, keypoints, boxes, active) * scale
 
                 # Calculate scores
                 selected, link_mae, frame_score, worst_link_name, \
@@ -132,12 +134,16 @@ def argparse():
                         help="Minimum instance score for a person slot to count as detected.")
     parser.add_argument("--conf-threshold", type=float, default=0.1,
                         help="A frame is not analyzed if any scored joint falls below this "
-                             "confidence. Calibrated on sample.mp4, where the least confident "
-                             "joint sits at ~0.30 in the median frame and ~0.11 at the 10th "
-                             "percentile: 0.1 drops the tail where a joint is essentially a "
-                             "guess, while keeping ~91%% of frames.")
+                             "confidence. Calibrated on sample.mp4 against MultiPose alone, "
+                             "where the least confident joint sits at ~0.30 in the median "
+                             "frame and ~0.11 at the 10th percentile: 0.1 drops the tail "
+                             "where a joint is essentially a guess. That gate cost ~7%% of "
+                             "frames before the Thunder second stage; with it, under 1%%.")
     parser.add_argument("--no-display", dest="display", action="store_false",
                         help="Process without opening a preview window.")
+    parser.add_argument("--no-refine", dest="refine", action="store_false",
+                        help="Skip the SinglePose Thunder second stage and keep "
+                             "MultiPose Lightning's keypoints as they come.")
     args = parser.parse_args()
     args.max_people = max(2, min(args.max_people, MAX_PEOPLE))
     return args
