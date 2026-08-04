@@ -1,0 +1,5 @@
+tqdm
+numpy
+opencv-python
+tensorflow[and-cuda]>=2.16; sys_platform != 'darwin' # CUDA 12 libraries ship as wheels
+tensorflow>=2.16; sys_platform == 'darwin' # tensorflow-macos is obsolete from 2.16; add tensorflow-metal for GPU
