@@ -1,5 +1,6 @@
 tqdm
 numpy
-opencv-python
-tensorflow[and-cuda]>=2.16; sys_platform != 'darwin' # CUDA 12 libraries ship as wheels
-tensorflow>=2.16; sys_platform == 'darwin' # tensorflow-macos is obsolete from 2.16; add tensorflow-metal for GPU
+opencv-python==4.11.0.86  # newer wheels have been seen without bundled FFmpeg on some platforms, breaking VideoWriter's mp4v codec
+onnxruntime-gpu; sys_platform != 'darwin' # CUDA-capable wheel
+onnxruntime; sys_platform == 'darwin' # the Apple wheel already bundles the CoreML execution provider
+rtmlib

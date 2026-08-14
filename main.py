@@ -35,17 +35,6 @@ def source_fps(cap):
     return float(fps)
 
 
-def detect_active(person_scores, det_threshold: float, max_people: int):
-    """
-    Person slots the model actually found, best first, capped at max_people.
-    """
-    active = np.flatnonzero(person_scores >= det_threshold)
-    if len(active) > max_people:
-        best = np.argsort(person_scores[active])[::-1][:max_people]
-        active = active[best]
-    return active
-
-
 def main(args):
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -63,14 +52,11 @@ def main(args):
         raise SystemExit(f"Could not open for writing: {args.output}")
 
     profiler = Profiler(args.profile)
-    pose = Pose(frame_width=width, frame_height=height, refine=args.refine,
+    pose = Pose(max_people=args.max_people, det_threshold=args.det_threshold,
                 profiler=profiler)
-    # Allocated once and reused: the model always reports the same six slots,
-    # and only the ones it actually detected are scored on any given frame.
+    # Allocated once and reused: only the people actually detected in a given
+    # frame occupy a prefix of this roster.
     people = make_people(MAX_PEOPLE, face_ignored=True)
-    # Applied in place to the coordinate channels only, so the confidences are
-    # left alone and the keypoints stay float32 instead of widening to float64.
-    scale = np.array([height, width], dtype=np.float32)
 
     if args.display:
         cv2.namedWindow("frame", cv2.WINDOW_NORMAL)
@@ -92,13 +78,9 @@ def main(args):
             for frame in reader:
                 profiler.lap("decode")
 
-                # Making prediction. Only the people that will actually be
-                # scored are worth refining, so pick them before the second
-                # stage runs and convert to pixels once it has.
-                keypoints, person_scores, boxes = pose.predict(frame)
-                active = detect_active(person_scores, args.det_threshold, args.max_people)
-                keypoints = pose.refine(frame, keypoints, boxes, active)
-                keypoints[:, :, :2] *= scale
+                # Making prediction.
+                keypoints = pose.predict(frame)
+                active = np.arange(len(keypoints))
 
                 # Calculate scores
                 selected, link_mae, frame_score, worst_link_name, \
@@ -177,25 +159,18 @@ def argparse():
     parser.add_argument("--output", type=str, default="output.mp4",
                         help="Path to write the annotated video to.")
     parser.add_argument("--max-people", type=int, default=MAX_PEOPLE,
-                        help=f"Cap on people scored per frame (model maximum {MAX_PEOPLE}).")
-    parser.add_argument("--det-threshold", type=float, default=0.2,
-                        help="Minimum instance score for a person slot to count as detected.")
+                        help=f"Cap on people scored per frame (default {MAX_PEOPLE}).")
+    parser.add_argument("--det-threshold", type=float, default=0.4,
+                        help="Minimum detection score for a person to count as detected.")
     parser.add_argument("--conf-threshold", type=float, default=0.1,
                         help="A frame is not analyzed if any scored joint falls below this "
-                             "confidence. Calibrated on sample.mp4 against MultiPose alone, "
-                             "where the least confident joint sits at ~0.30 in the median "
-                             "frame and ~0.11 at the 10th percentile: 0.1 drops the tail "
-                             "where a joint is essentially a guess. That gate cost ~7%% of "
-                             "frames before the Thunder second stage; with it, under 1%%.")
+                             "confidence.")
     parser.add_argument("--display", dest="display", action="store_true",
                         help=f"Open a preview window, refreshed every "
                              f"{DISPLAY_EVERY} frames. Off by default: imshow "
                              f"plus waitKey costs several ms a frame.")
     parser.add_argument("--profile", action="store_true",
                         help="Print a per-stage timing breakdown of the frame loop.")
-    parser.add_argument("--no-refine", dest="refine", action="store_false",
-                        help="Skip the SinglePose Thunder second stage and keep "
-                             "MultiPose Lightning's keypoints as they come.")
     args = parser.parse_args()
     args.max_people = max(2, min(args.max_people, MAX_PEOPLE))
     return args
